@@ -15,15 +15,16 @@ import pantilthat
 import flask
 
 class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
-                      octoprint.plugin.AssetPlugin,
-                      octoprint.plugin.TemplatePlugin,
-                      octoprint.plugin.StartupPlugin,
-                      octoprint.plugin.ShutdownPlugin,
+					  octoprint.plugin.AssetPlugin,
+					  octoprint.plugin.TemplatePlugin,
+					  octoprint.plugin.StartupPlugin,
+					  octoprint.plugin.ShutdownPlugin,
 					  octoprint.plugin.SimpleApiPlugin):
 
 	def __init__(self):
 		self.pi = None
 		self.currentZ = 0
+		self.servo_pulsewidths = {}
 
 	##~~ SettingsPlugin mixin
 	def get_settings_defaults(self):
@@ -82,10 +83,12 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 			self._logger.info("GPIO x changed, initializing.")
 			xAutoAngle = self._settings.get_int(["xAutoAngle"])
 			self.pi.set_servo_pulsewidth(newGPIOX, xAutoAngle)
+			self.turn_servo_off(newGPIOX)
 		if oldGPIOY != newGPIOY:
 			self._logger.info("GPIO y changed, initiliazing.")
 			yAutoAngle = self._settings.get_int(["yAutoAngle"])
 			self.pi.set_servo_pulsewidth(newGPIOY, yAutoAngle)
+			self.turn_servo_off(newGPIOY)
 
 
 	##~~ AssetPlugin mixin
@@ -121,6 +124,8 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 			GPIOY = self._settings.get_int(["GPIOY"])
 			self.pi.set_servo_pulsewidth(GPIOX, self.angle_to_width(xAutoAngle))
 			self.pi.set_servo_pulsewidth(GPIOY, self.angle_to_width(yAutoAngle))
+			self.turn_servo_off(GPIOX)
+			self.turn_servo_off(GPIOY)
 			"""self._settings.set(["currentX"], xAutoAngle)
 			self._settings.set(["currentY"], yAutoAngle)
 			self._settings.save()"""
@@ -203,22 +208,23 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 			if self._settings.get_boolean(["yInvert"]):
 				angle_to_reach = 180 - angle_to_reach
 
-		actual_width = self.pi.get_servo_pulsewidth(int(pin))
+		actual_width = self.get_servo_pulsewidth(int(pin))
 		actual_angle = self.width_to_angle(actual_width)
 		width_to_reach = self.angle_to_width(angle_to_reach)
 
 		#self._logger.info("pin {} actual_width {} actual_angle {} width_to_reach {} angle_to_reach {}".format(pin, actual_width, actual_angle, width_to_reach, angle_to_reach))
-
+		if width_to_reach == actual_width:
+			return
 		if width_to_reach - actual_width >= 0:
 			incrementSign = 1
 		else:
 			incrementSign = -1
 
-		for x in range(actual_width+1, width_to_reach+1, incrementSign):
+		for x in range(actual_width+incrementSign, width_to_reach+incrementSign, incrementSign):
 			self.pi.set_servo_pulsewidth(int(pin), x)
 			#self._logger.info("Setting the width of the pin {} at {} us".format(int(pin), x))
 			time.sleep(sleepTime / 1000)
-			width_current = self.pi.get_servo_pulsewidth(int(pin))
+			width_current = self.get_servo_pulsewidth(int(pin))
 			if width_current > self.angle_to_width(maxAngle):  # Noticed that the angle was 180.0° for 2479us and 500 was giving strange values .......
 				self._logger.info("GPIO {} reached his boundaries with a {} pulse width".format(pin, width_current))
 				self.pi.set_servo_pulsewidth(int(pin), self.angle_to_width(maxAngle))
@@ -227,7 +233,8 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 				self._logger.info("GPIO {} reached his boundaries with a {} pulse width".format(pin, width_current))
 				self.pi.set_servo_pulsewidth(int(pin), self.angle_to_width(minAngle))
 				break
-
+		self.turn_servo_off(pin)
+		
 	def move_servo_to_ang_pimoroni(self, axis, angle_to_reach):
 		if axis == "PAN":
 			sleepTime = self._settings.get_int(["sleepTimeX"])
@@ -240,7 +247,7 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 				incrementSign = 1
 			else:
 				incrementSign = -1
-			for x in range(actual_angle+1, angle_to_reach+1, incrementSign):
+			for x in range(actual_angle+incrementSign, angle_to_reach+incrementSign, incrementSign):
 				angle_current = self.pimoroni_to_angle(pantilthat.get_pan())
 				if angle_current > maxAngle:
 					self._logger.info("PAN reached his boundaries with a {} pulse width".format(angle_current))
@@ -264,7 +271,7 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 				incrementSign = 1
 			else:
 				incrementSign = -1
-			for x in range(actual_angle+1, angle_to_reach+1, incrementSign):
+			for x in range(actual_angle+incrementSign, angle_to_reach+incrementSign, incrementSign):
 				angle_current = self.pimoroni_to_angle(pantilthat.get_tilt())
 				if self._settings.get_boolean(["yInvert"]):
 					self._settings.set(["currentY"], 180 - angle_current)
@@ -286,7 +293,7 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 	def move_servo_by(self, pin, angle_difference): #Relative positioning
 		direction = 1
 
-		actual_width = self.pi.get_servo_pulsewidth(int(pin))
+		actual_width = self.get_servo_pulsewidth(int(pin))
 		actual_angle = self.width_to_angle(actual_width)
 		sleepTime = 0
 
@@ -311,14 +318,15 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 		width_to_reach = self.angle_to_width(angle_to_reach)
 
 		#self._logger.info("pin {} actual_width {} actual_angle {} angle_difference {} direction {} width_to_reach {} angle_to_reach {}".format(pin, actual_width, actual_angle, angle_difference, direction, width_to_reach, angle_to_reach))
-
+		if width_to_reach == actual_width:
+			return
 		if width_to_reach - actual_width >= 0:
 			incrementSign = 1
 		else:
 			incrementSign = -1
 
-		for x in range(actual_width+1, width_to_reach+1, incrementSign):
-			width_current = self.pi.get_servo_pulsewidth(int(pin))
+		for x in range(actual_width+incrementSign, width_to_reach+incrementSign, incrementSign):
+			width_current = self.get_servo_pulsewidth(int(pin))
 			if width_current > self.angle_to_width(maxAngle):  # Noticed that the angle was 180.0° for 2479us and 500 was giving strange values .......
 				self._logger.info("GPIO {} reached his boundaries with a {} pulse width".format(pin, width_current))
 				self.pi.set_servo_pulsewidth(int(pin), self.angle_to_width(maxAngle))
@@ -330,6 +338,7 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 			self.pi.set_servo_pulsewidth(int(pin), x)
 			#self._logger.info("Setting the width of the pin {} at {} us".format(int(pin), x))
 			time.sleep(sleepTime / 1000)
+		self.turn_servo_off(pin)
 
 	def move_servo_by_pimoroni(self, axis, angle_difference): #Relative positioning
 		#self._logger.info("Just received a command with axis {} and angle {}".format(axis, angle_difference))
@@ -352,7 +361,7 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 				incrementSign = -1
 
 			#self._logger.info("actual_angle {} angle_to_reach {} incrementSign {}".format(actual_angle, angle_to_reach, incrementSign))
-			for x in range(actual_angle+1, angle_to_reach+1, incrementSign):
+			for x in range(actual_angle+incrementSign, angle_to_reach+incrementSign, incrementSign):
 				angle_current = self.pimoroni_to_angle(pantilthat.get_pan())
 				if angle_current > maxAngle:
 					self._logger.info("PAN reached his boundaries with a {} pulse width".format(angle_current))
@@ -384,7 +393,7 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 				incrementSign = -1
 
 			#self._logger.info("actual_angle {} angle_to_reach {} incrementSign {}".format(actual_angle, angle_to_reach, incrementSign))
-			for x in range(actual_angle+1, angle_to_reach+1, incrementSign):
+			for x in range(actual_angle+incrementSign, angle_to_reach+incrementSign, incrementSign):
 				angle_current = self.pimoroni_to_angle(pantilthat.get_tilt())
 				if self._settings.get_boolean(["yInvert"]):
 					self._settings.set(["currentY"], 180 - angle_current)
@@ -663,13 +672,13 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 		if command == "EASYSERVO_GET_POSITION":
 			if pigpioUsed:
 				if self._settings.get_boolean(["xInvert"]):
-					currentX = 180 - self.width_to_angle(self.pi.get_servo_pulsewidth(self._settings.get_int(["GPIOX"])))
+					currentX = 180 - self.width_to_angle(self.get_servo_pulsewidth(self._settings.get_int(["GPIOX"])))
 				else:
-					currentX = self.width_to_angle(self.pi.get_servo_pulsewidth(self._settings.get_int(["GPIOX"])))
+					currentX = self.width_to_angle(self.get_servo_pulsewidth(self._settings.get_int(["GPIOX"])))
 				if self._settings.get_boolean(["yInvert"]):
-					currentY = 180 - self.width_to_angle(self.pi.get_servo_pulsewidth(self._settings.get_int(["GPIOY"])))
+					currentY = 180 - self.width_to_angle(self.get_servo_pulsewidth(self._settings.get_int(["GPIOY"])))
 				else:
-					currentY = self.width_to_angle(self.pi.get_servo_pulsewidth(self._settings.get_int(["GPIOY"])))
+					currentY = self.width_to_angle(self.get_servo_pulsewidth(self._settings.get_int(["GPIOY"])))
 				self._plugin_manager.send_plugin_message("EasyServo", "{} {}".format(currentX, currentY))
 			else:
 				if self._settings.get_boolean(["xInvert"]):
@@ -688,7 +697,21 @@ class EasyservoPlugin(octoprint.plugin.SettingsPlugin,
 	def on_api_get(self, request):
 		return flask.jsonify(foo="bar")
 
+	def get_servo_pulsewidth(self, pin):
+		width = self.pi.get_servo_pulsewidth(pin)
+		#self._logger.info("get_servo_pulsewidth width=" + str(width))
+		if width > 0:
+			return width
+		#self._logger.info("get_servo_pulsewidth self.servo_pulsewidths.get=" + str(self.servo_pulsewidths.get(int(pin),0)))
+		return self.servo_pulsewidths.get(int(pin),0)
 
+	def turn_servo_off(self, pin):
+		#This should fix some jitter problems
+		#self._logger.info("turn_servo_off pin=" + str(pin))
+		width = self.get_servo_pulsewidth(int(pin))
+		self.servo_pulsewidths[int(pin)] = width
+		time.sleep(0.05)
+		self.pi.set_servo_pulsewidth(int(pin), 0)
 
 __plugin_name__ = "Easy Servo"
 __plugin_pythoncompat__ = ">=2.7,<4"
